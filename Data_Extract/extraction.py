@@ -219,3 +219,4 @@ def extraction_wrapper():
     #Output data frame object that contains all the posters
     return final_san_df
 
+extraction_wrapper()
