@@ -1,0 +1,185 @@
+---
+title: "Thresholding"
+author: "Alejandro Ramos Usaj"
+date: "10/12/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r datasets}
+#Load the dataset containing the matched names
+matchees <- read_csv('matche_nombres.csv') %>% 
+  #Get rid of missing values
+  drop_na(messy)
+```
+
+To assess an adequate threshold of the name matching algorithm to filter non-matched names we examine the distribution of the similarity scores given by the KNN algorithm and compare the association with the different implementations from the fuzzywuzzy Python library over the best match from the KNN algorithm. 
+
+## Scoring measures distribution
+
+### KNN algorithm
+
+Histogram of the scores given by the KNN algorithm implementation over the word vectors following tf-idf implementation.
+
+```{r}
+hist(matchees$score, main = '', xlab = 'KNN Distance Score')
+```
+
+### KNN algorithm (withouth 0)
+
+Same histogram as before but exlcudes the 0 values. 
+
+```{r}
+hist(
+  matchees[matchees$score > 0,'score'][[1]],
+  main = '',
+  xlab = 'KNN Distance Score'
+)
+knn_quant <- quantile(matchees[matchees$score > 0,'score'][[1]], c(0.001, 0.025,0.975, 0.999))
+abline(v = knn_quant[c(2,3)], col = 'orange', lty = 2, lwd = 2)
+abline(v = knn_quant[c(1,4)], col = 'red', lty = 2, lwd = 2)
+```
+
+### Scores associations
+
+Association between fuzzywuzzy algorithms and the KNN algorithm score.
+
+```{r, message = FALSE}
+ggpairs(matchees %>% select(`Partial Token Set`, `Token Sort`, `Partial Ratio`, WRatio, score),
+        lower = list(continuous = wrap("points", alpha = 0.25)))
+```
+
+
+### First component distribution
+
+Histogram of the first component from a PCA over all the fuzzywuzzy library algorithms used. 
+
+```{r thresholds_pca}
+score_pca <- prcomp(
+  matchees %>% select(WRatio, `Partial Ratio`, `Token Sort`, `Partial Token Set`)
+)
+matchees$pca1 <- score_pca$x[,1]
+hist(matchees$pca1, main = '', xlab = 'PCA', breaks = 50, xaxp=c(-30,150,10))
+title(sub = paste0('First principal component accounts for ', round(summary(score_pca)$importance[2], 3), ' of the variance'))
+```
+
+## Filtering thresholds
+
+
+```{r}
+thres_filter <- function(thres_levels, score_var, higher = T){
+  #thres_levels = a vector of numbers that determine different threshold levels to try
+  #score_var = a string or vector of strings containing column names from the "matchees" dataframe
+  #higher = boolean determining how to compute the threshold
+  
+  #Creates a temporary dataframe to use inside the function
+  temp_df <- data.frame()
+  
+  #Iterates over all the threshold levels supplied as an argument
+  for(i in seq_along(thres_levels)){
+    temp_df[i,'Thres'] <- thres_levels[i] #Assign the ith threshold level to the ith row from the temporary dataframe 
+    for(k in score_var){ #Iterate over each column from the score_var argument
+      if(higher == T){
+        temp_df[i,k] <- dim(unique(matchees[matchees[k] >= thres_levels[i],'match']))[1] #Check how many unique elements are above the threshold
+      }
+      else{
+        temp_df[i,k] <- dim(unique(matchees[matchees[k] <= thres_levels[i],'match']))[1] #Check how many unique elements are below the threshold
+      }
+    }
+  }
+  return(temp_df)
+}
+```
+
+### KNN Distance score
+
+```{r}
+knn_df <- thres_filter(
+  thres_levels = seq(0, max(matchees$score), 0.01), 
+  score_var = c('score'),
+  higher = F
+  )
+pivot_longer(knn_df, c('score')) %>%
+  ggplot(mapping = aes(x = Thres, y = value)) +
+  geom_line() +
+  geom_vline(xintercept = knn_quant[c(1,2)], linetype = 'dashed') +
+  theme_classic() +
+  xlab('Threshold') + ylab('Name matches')
+```
+
+
+### Levenshtein algorithms
+
+```{r}
+lev_df <- thres_filter(
+  thres_levels = seq(0,100), 
+  score_var = c('WRatio','Partial Token Set','Partial Ratio','Token Sort', 'Score Average'),
+  higher = T
+  )
+
+pivot_longer(lev_df, c('WRatio','Partial Token Set','Partial Ratio','Token Sort', 'Score Average')) %>%
+  ggplot(mapping = aes(x = Thres, y = value, color = name)) +
+  geom_line() +
+  labs(color = 'Algorithm') +
+  theme_classic() +
+  xlab('Threshold') + ylab('Name matches')
+
+```
+
+
+### First principal component
+
+```{r}
+pca_df <- thres_filter(
+  thres_levels = seq(min(matchees$pca1),max(matchees$pca1), length.out = 100), 
+  score_var = c('pca1'),
+  higher = F
+  )
+pivot_longer(pca_df, c('pca1')) %>%
+  ggplot(mapping = aes(x = Thres, y = value)) +
+  geom_line() +
+  theme_classic() +
+  xlab('PCA Threshold') + ylab('Name matches')
+```
+
+## Similarity between different filtering approaches{.tabset}
+
+
+```{r}
+filt_compare <- function(first_col, second_col, first_seq, second_seq, higher = TRUE){
+  res_m <- matrix(ncol = length(first_seq), nrow = length(second_seq))
+  colnames(res_m) <- first_seq
+  rownames(res_m) <- second_seq
+  for(i in first_seq){
+    for(k in second_seq){
+      if(higher == F){
+      res_m[as.character(k),as.character(i)] <- mean(
+        (matchees[[first_col]] < i) == (matchees[[second_col]] > k)
+      )}
+      else{
+       res_m[as.character(k),as.character(i)] <- mean(
+        (matchees[[first_col]] > i) == (matchees[[second_col]] > k)
+      ) }
+    }
+  }
+  return(res_m)
+}
+```
+
+### KNN vs. WRatio
+
+```{r}
+knn_wratio <- filt_compare('score','WRatio',seq(0,1,0.01),seq(0,100,1), higher = F)
+heatmap.2(knn_wratio, scale = 'none', Rowv = NULL, Colv = NULL, dendrogram = 'none', trace = 'none')
+```
+
+### KNN vs. First Principal Component
+
+```{r}
+wratio_pca <- filt_compare('pca1','score',round(seq(-30,150,length.out = 100),2), seq(0,1,0.01), higher = F)
+heatmap.2(wratio_pca, scale = 'none', Rowv = NULL, Colv = NULL, dendrogram = 'none', trace = 'none',
+          xlab = 'First Principal Component', ylab = 'KNN Distance')
+```
