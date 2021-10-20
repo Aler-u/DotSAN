@@ -1,0 +1,5 @@
+tipo_dedicacion_horaria_semanal_id;tipo_dedicacion_horaria_semanal_descripcion
+-1;Sin datos
+1;40 horas o más
+2;De 20 hasta 39 horas
+3;De 0 hasta 19 horas
