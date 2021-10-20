@@ -70,6 +70,19 @@ def afil_fun(row, afil_dic):
         #row = expects a list
         #afil_dic = expects a dictionary holding the relationship between the number and the affiliation 
 
+    #Dictionary to match the superscript numbers to their integers counterpart. Contains the UNICODE characters for the superscript numbers as keys and the numbers they represent as values
+    superscript_dic = {
+        chr(185): 1,
+        chr(178): 2,
+        chr(179): 3,
+        chr(8308): 4,
+        chr(8309): 5,
+        chr(8310): 6,
+        chr(8311): 7,
+        chr(8312): 8,
+        chr(8313): 9
+    }
+
     #Check if the length of the list is higher than one
     if len(row) > 1:
         res_lng = []
