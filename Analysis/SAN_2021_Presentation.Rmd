@@ -1,0 +1,591 @@
+---
+title: "SAN 2021 Annual Meeting Presentation"
+author: "Aleru"
+date: "5/26/2021"
+output:
+  html_document:
+    df_print: paged
+subtitle: Details the data pre-processing and analysis for the presentation given
+  E-Social event 'Co-authorship network structure and gender inequalities of the Argentine
+  neuroscientific community'
+  in the [SAN 2021 Meeting](https://san2021.saneurociencias.org.ar/) as part of the
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE)
+```
+
+# Data Preparation
+
+```{r librerias, include=FALSE}
+library(tidyverse)
+library(GGally)
+library(gplots)
+library(igraph)
+library(stringi)
+library(ggpubr)
+library(ggfortify)
+library(corrplot)
+```
+
+## Data loading
+
+We load the required datasets from different sources. 
+
+```{r dataset_loading}
+
+#Load the dataset containing the matched names
+matchees <- read_csv('Scraper/Scraped_datasets/matche_nombres.csv') %>% 
+  #Get rid of missing values
+  drop_na(messy)
+
+#Load the dataset containing the reference of the numeric indicator variable for sex
+sexo_ref <- read_csv('mincyt_datasets/ref_sexo.csv')
+
+#Load the dataset containing the reference of the numeric indicator variable for conicet category
+categoria_ref <- read_csv2('mincyt_datasets/ref_categoria_conicet.csv')
+
+#Load the dataset containing conicet staff
+personas_actual <- read_csv2('mincyt_datasets/personas_2018.csv') %>% 
+  inner_join(.,categoria_ref)  #Join the dataset with the one containing the numeric indicator reference for conicet category 
+
+#Load people database
+personas <- read_csv2('mincyt_datasets/personas.csv')
+
+# Load the dataframe holding the authors posters names, poster title and year
+posters <- read_csv('Scraper/Scraped_datasets/all_posters.csv')
+#Generate a unique id for every entry
+posters$poster_author_id <- 1:nrow(posters)
+#Create one dataframe to hold name and poster title for first authors and one for last authors
+first_authors <- posters %>% drop_na(titulo) %>% group_by(titulo) %>% summarize(first(autor)) %>% ungroup() %>% mutate(author_position = 'first') %>% rename(name = `first(autor)`)
+last_authors <- posters %>% drop_na(titulo) %>% group_by(titulo) %>% summarize(last(autor)) %>% ungroup() %>% mutate(author_position = 'last') %>% rename(name = `last(autor)`)
+#Combine the two dataframes
+binded_positions <- rbind(first_authors, last_authors)
+#Use previously created dataframes to add a column to the posters dataframe containing author position
+posters <- left_join(posters, binded_positions, by = c('autor' = 'name', 'titulo' = 'titulo'))
+#Other positions
+posters <- posters %>% replace_na(list(author_position = 'other'))
+```
+
+## Filter name matches
+
+Filter the authors matching names dataframe by the KNN distance score according to the 1th percentile and a WRatio score higher or equal to 95.
+
+```{r}
+#Get the 1th percentile value for the KNN distance score
+percent1 <- quantile(
+  matchees$score[matchees$score > 0], #Calculate over KNN distance score excluding 0 values
+  0.01
+)
+#Filter the matchees dataset
+filter_match <- matchees %>% filter(score < percent1 & WRatio >= 95)
+```
+
+
+## Data Transformations
+
+```{r}
+#Create a new factor column with an abbreviated conicet category for PIs 
+personas_actual$categoria_conicet_refactor <-  fct_collapse(personas_actual$categoria_conicet_descripcion,
+             becario = 'Becario doctoral',
+             posdoc = 'Becario postdoctoral',
+             investigador_low = c('Investigador adjunto', 'Investigador asistente'),
+             investigador_high = c('Investigador independiente', 'Investigador principal', 'Investigador superior'),
+             otros = c('No pertenece a Conicet', 'Otro personal Conicet', 'Personal de apoyo')
+             )
+
+#Create a new factor column (binary) to specify researcher status
+personas_actual$investigador <- fct_collapse(personas_actual$categoria_conicet_descripcion,
+                                             no_inv = c('becario','posdoc','otros'),
+                                             inv = c('investigador_low','investigador_high')
+                                            )
+
+#Create a new column combining the name and the last name and removing foreign characters
+personas$nuevo_nombre <- str_to_lower(
+  stri_trans_general(
+  str = paste(personas$nombre, personas$apellido),
+  id = 'Latin-ASCII')
+)
+
+#Join the people database with the conicet staff dataset using the person id 
+personas <- left_join(
+  personas,
+  personas_actual %>% select(persona_id, categoria_conicet_descripcion, investigador)
+)
+
+#Transform labels from the sex factor column
+personas$sexo_id <- fct_recode(factor(personas$sexo_id), Female = '1', Male = '2')
+
+# Redefine topics to collapse common categories and generate a new topic factor
+posters$topic <-  fct_collapse(
+  posters$tema,
+  `Theoretical and Computational Neuroscience` = c('Theoretical and Computational Neuroscience', 'Computational Neuroscience'),
+  BAW = c('BAW', 'Brain Awareness Week Activities'),
+  `Cellular and Molecular Neurobiology` = c('Cellular and Molecular Neurobiology', 'Cellular and Molecular neurobiology'),
+  `Cognition, Behavior and Memory` = c('Cognition, Behavior and Memory', 'Cognition, Behavior, and Memory'),
+  `Sensory and Motor Systems` = c('Sensory and Motor Systems', 'Motor Systems', 'Sensory Systems'),
+  `Synaptic Transmission and Excitability` = c('Synaptic Transmission and Excitability', 'Neural excitability, synaptic transmission and neuron-glia interactions'),
+  `Neural Circuits and Systems Neuroscience` = c('Neural Circuits and Systems Neuroscience', 'Neural Circuit Physiology', 'Integrative Systems')
+  )
+
+# Drop erroneous detected topics
+
+posters <- posters[!str_detect(posters$tema, 'P\\d+'),]
+
+
+#Join the dataframe with the poster information with the dataframe containing the filtered name matches 
+joined_authors <- inner_join(posters,
+          filter_match %>% select(match, original, id),
+          by = c('autor' = 'original')) %>%
+  left_join(.,
+            personas,
+            by = c('id'='persona_id'))
+
+#Generate new row id
+joined_authors$row_id <- 1:nrow(joined_authors)
+
+#Drop duplicates
+joined_authors <- joined_authors %>% distinct(autor, titulo, .keep_all = TRUE)
+```
+
+# Sex comparisons
+
+These comparisons seek to explore the differences in sex proportion within posters authors.
+
+## Sex over the years
+
+We try to observe differences in the proportion of women over the years. However many times the same person can appear in several posters thus accounting for more than one entry for their respective sex. Therefore we create two plots, one with repeated authors and the second one without duplicates.
+
+Both plots show women proportion, the 95% confidence interval, the total amount of authors for that year and the 95% interval for a binomial distribution with *p* equal to 0.5 and *n* equal to the amount of total authors. Moreover for the second plot without duplicates, the overall women proportion for all years is shown as a red dotted line. Lastly, we show the probability of observing the women proportion over each year as given by the following binomial distribution.
+
+$P_{x} = \binom{n}{x} 0.5^{x} 0.5^{n-x}$
+
+Where *n* is the total amount of authors and *x* is the total of women with a probability of success of 0.5.  
+
+
+```{r}
+sex_by_year <- function(dataset){
+  dataset %>% count(year, sexo_id) %>% pivot_wider(names_from = sexo_id, values_from = n) %>% 
+  mutate(total = Female + Male,
+        female_prop = Female/total,
+         male_prop = Male/total,
+        low_ci = female_prop - sqrt(female_prop*(1 - female_prop)/total) * 1.96,
+        high_ci = female_prop + sqrt(female_prop*(1 - female_prop)/total) * 1.96,
+        low_bi = qbinom(0.975, total, 0.5)/total,
+        high_bi = qbinom(0.025, total, 0.5)/total,
+        prob = round(1 - pbinom(Female, total, 0.5), 3)
+  )
+}
+
+non_unique_authors <- sex_by_year(joined_authors)
+
+unique_authors <- sex_by_year(
+  joined_authors %>% distinct(match, .keep_all = TRUE)
+) 
+  
+ggplot(data = non_unique_authors, mapping = aes(x = year, y = female_prop)) +
+  geom_rect(aes(xmin = year - 0.5, xmax = year + 0.5, ymin = low_bi, ymax = high_bi), fill = 'lightgrey', alpha = 0.5) +
+  geom_line() +
+  geom_text(aes(label = prob, y = high_ci + 0.01)) +
+  geom_errorbar(aes(ymin = low_ci, ymax = high_ci), width = 0.35) +
+  geom_point(aes(size = total), shape = 1) +
+  theme_pubclean() +
+  labs(title = 'Sex proportion over years (with duplicates)') + xlab('Year') + ylab('Proportion of women') +
+  scale_size(name = 'Total authors') 
+
+ggplot(data = unique_authors, mapping = aes(x = year, y = female_prop)) +
+  geom_rect(aes(xmin = year - 0.5, xmax = year + 0.5, ymin = low_bi, ymax = high_bi), fill = 'lightgrey', alpha = 0.5) +
+   geom_hline(yintercept = sum(unique_authors$Female)/sum(unique_authors$Female, unique_authors$Male),
+             linetype = 'dashed', color = 'red') +
+  geom_line() +
+  geom_text(aes(label = prob, y = high_ci + 0.02)) +
+  geom_errorbar(aes(ymin = low_ci, ymax = high_ci), width = 0.35) +
+  geom_point(aes(size = total), shape = 1) +
+  theme_pubclean() +
+  labs(title = 'Sex proportion over years') + xlab('Year') + ylab('Proportion of women') +
+  scale_size(name = 'Total authors') 
+```
+
+
+## Sex by topic
+
+In this case we wish to examine the proportion for each sex by poster topic. To create the plot some topics were collapsed and merged together due to changes in the poster topics over the years. Next we detail those topics which are made up of several themes.
+
+* `Theoretical and Computational Neuroscience`: Esta compuesta por *'Theoretical and Computational Neuroscience'* y *'Computational Neuroscience'*
+* `BAW`: Esta compuesta por *'BAW'* y *'Brain Awareness Week Activities'*
+* `Sensory and Motor Systems`: Esta compuesta por *'Sensory and Motor Systems'*, *'Motor Systems'* y *'Sensory Systems'*
+* `Synaptic Transmission and Excitability`: Esta compuesta por *'Synaptic Transmission and Excitability'*, *'Neural excitability'* y *'synaptic transmission and neuron-glia interactions'*
+* `Neural Circuits and Systems Neuroscience`: Esta compuesta por *'Neural Circuits and Systems Neuroscience'*, *'Neural Circuit Physiology'* e *'Integrative Systems'*
+
+The plot shows with the colored bars the sex proportion and uses dots to reflect a proportion of 0.5 as well as the total number of authors for each topic given by the dot size. Furthermore the lines extending from the dots form the 95% interval for a binomial distribution with an *n* equal to the number of authors in every topic with a probability of success of 0.5
+
+```{r}
+#Generates a 95% confidence interval for every topic using a binomial distribution of n equal to the n of that topic and a probability of 0.5
+sex_by_topic <- joined_authors %>% group_by(topic) %>% distinct(match) %>% count(topic) %>% ungroup() %>%
+    mutate(
+      low_bi = qbinom(0.025, n, 0.5)/n,
+      high_bi = qbinom(0.975, n, 0.5)/n
+           )
+
+ggplot(data = joined_authors, mapping = aes(x = topic, fill = sexo_id)) +
+  geom_bar(position = 'fill') +
+  geom_pointrange(data = sex_by_topic, aes(x = topic, y = 0.5, ymin = low_bi, ymax = high_bi, size = n), inherit.aes = FALSE) +
+  scale_x_discrete(labels = str_sub(unique(joined_authors$topic), end = 20)) +
+  coord_flip() + scale_size(name = 'Total authors', range = c(0.5,1.5)) +
+  xlab('Topic') + ylab('Proportion') +
+  scale_fill_brewer(name = 'Sex', palette = 'Set1') + theme_pubclean()
+```
+## Sex proportion and conicet category
+
+```{r}
+sex_category <- joined_authors %>% filter(categoria_conicet_descripcion != 'No pertenece a Conicet' & categoria_conicet_descripcion != 'Personal de apoyo'
+) %>% arrange(year) %>% distinct(match, .keep_all = TRUE)
+ggplot(data = sex_category, mapping = aes(x = categoria_conicet_descripcion, fill = sexo_id)) +
+  geom_bar(position = 'fill') +
+  coord_flip() + scale_size(name = 'Total authors', range = c(0.5,1.5)) +
+  xlab('Research status') + ylab('Proportion') +
+  scale_fill_brewer(name = 'Sex', palette = 'Set1') + theme_pubclean()
+```
+
+## Sex proportion author order
+
+The following analysis explore the relationship between the sex proportion and the author order
+
+### Sex proportion author order by year
+
+The colored bars represent the sex proportion for each year for each poster author position. The dashed line represents the 0.5 proportion. 
+
+```{r, warning=FALSE}
+plus2authors <- joined_authors %>% group_by(titulo) %>% filter(n() >= 2) %>% ungroup()
+ggplot(data = plus2authors, mapping = aes(x = year, fill = sexo_id)) +
+  geom_bar(position = 'fill') +
+  geom_hline(yintercept = 0.5, linetype = 'dashed') +
+  stat_prop(geom = 'label', aes(label = round(..prop.., 2), by = year), size = 3.5) +
+  facet_wrap(~author_position, labeller = labeller(author_position = c('first' = 'First', 'last' = 'Last', 'other' = 'Other'))) +
+  theme_pubclean() +
+  xlab('Year') + ylab('Proportion') + scale_fill_brewer(name = 'Sex', palette = 'Set1')
+```
+
+
+### Gender proportion author order with intervals
+
+```{r, warning=F, message=F}
+plus2authors %>% group_by(year, author_position) %>% 
+  summarise(
+    media = mean(sexo_id == 'Female'), 
+    conteo = n(), 
+    ci_up = media + (2 * sqrt(media*(1-media)/conteo)),
+    ci_low = media - (2 * sqrt(media*(1-media)/conteo)),
+    binom_low = qbinom(0.025, conteo, 0.5)/conteo,
+    binom_up = qbinom(0.975, conteo, 0.5)/conteo
+      ) %>% 
+  filter(author_position != 'other') %>%
+  ggplot(mapping = aes(x = year, y = media, shape = author_position)) +
+  geom_rect(aes(ymin = binom_low, ymax = binom_up, xmax = year - 1, xmin = year), fill = 'lightgrey',alpha = .25, position = position_dodge(.75)) +
+  geom_hline(
+    yintercept = c(
+      table(plus2authors$sexo_id[plus2authors$position == 'first'])[['Female']]/sum(table(plus2authors$sexo_id[plus2authors$position == 'first'])),
+      table(plus2authors$sexo_id[plus2authors$position == 'last'])[['Female']]/sum(table(plus2authors$sexo_id[plus2authors$position == 'last']))
+    ),
+    linetype = 'dashed',
+    color = RColorBrewer::brewer.pal(3, 'Set1')[1:2]
+  ) +
+  geom_hline(yintercept = 0.5, linetype = 'dashed') +
+  geom_line(position = position_dodge(.75)) +
+  geom_errorbar(aes(ymax = ci_up, ymin = ci_low, color = author_position), width = .2, position = position_dodge(.75)) +
+  geom_point(aes(color = author_position), size = 5, position = position_dodge(.75)) +
+  theme_pubclean() +
+  theme(legend.position = 'bottom') + xlab('Año') + ylab('Proporcion de mujeres') +
+  scale_shape_discrete(name = 'Posicion de la autoria', labels = c('Primera','Ultima')) +
+  scale_color_brewer(name = 'Posicion de la autoria', labels = c('Primera', 'Ultima'), palette = 'Set1')
+```
+
+## Hypothesis testing analysis
+
+### Gender proportion
+
+```{r}
+proporcion_sexo_total <- joined_authors %>% distinct(match, .keep_all = T) %>% count(sexo_id) %>%
+  mutate(
+  bi_low = quantile(rbinom(10000, sum(n), 0.5), probs = 0.025),
+  bi_high = quantile(rbinom(10000, sum(n), 0.5), probs = 0.975),
+  sqd = (n - (sum(n)/2))^2,
+  chisqd = sqd/(sum(n)/2)
+    )
+
+proporcion_sexo_total
+```
+
+Es util comparar las proporciones observadas con las esperadas utilizando el estadistico $\chi^{2}$ donde la probabilidad de las proporciones observadas segun el estadistico chi-cuadrado es `r pchisq(q = sum(proporcion_sexo_total$chisqd), 1, lower.tail = F)`
+
+
+### Gender and position, two-way contingency table
+
+
+```{r}
+tabla_frecuencia_sexo <- xtabs(~ sexo_id + author_position, data = plus2authors %>% filter(author_position != 'other'))
+
+tabla_frecuencia_sexo
+
+chisq.test(
+  tabla_frecuencia_sexo
+)
+
+chisq.test(
+  tabla_frecuencia_sexo
+)$stdres
+
+rcompanion::cramerV(
+  as.matrix(tabla_frecuencia_sexo),
+  ci = TRUE,
+  bias.correct = TRUE
+)
+```
+
+Se puede observar mejor esta relacion con un grafico de mosaico
+
+```{r}
+vcd::mosaic(tabla_frecuencia_sexo, gp = vcd::shading_hcl, gp_args = list(interpolate = c(1, 1.8)))
+```
+
+
+## Bayesian Approach
+
+```{r}
+non_unique_authors %>%
+  mutate(
+    independent_median = qbeta(c(0.5), Female + 1, total - Female + 1),
+    independent_low = qbeta(c(0.025), Female + 1, total - Female + 1),
+    independent_high = qbeta(c(0.975), Female + 1, total - Female + 1)
+  ) %>%
+  ggplot(mapping = aes(x = year, y = independent_median, ymin = independent_low, ymax = independent_high)) +
+  geom_line() +
+  geom_point(size = 3) +
+  geom_errorbar(width = 0.3) +
+  ylab('Median of the parameter distribution') + xlab('Year')
+```
+
+## Probability analysis
+
+We are interested in the probability of being a female first author given that the last author is male and the other way around. To determine this we first have to determine prior probabilities. First of all 
+
+What is the probability that someone is a first author? $P(First \ Author)$ = `r sum(plus2authors$author_position == 'first')/nrow(plus2authors)`
+
+The probability of someone being a last author is exactly the same as the one above given that all posters necessarily have a first and last author. 
+
+What are the odds of being a first author? $odds = \frac{P(First \ Author)}{P(\neg First \ Author)}$ = `r (sum(plus2authors$author_position == 'first')/nrow(plus2authors))/(1-(sum(plus2authors$author_position == 'first')/nrow(plus2authors)))`
+
+After establishing the prior probabilities for the authors positions we examine the sex proportions.
+
+What is the probability that someone is female? $P(Female)$ = `r sum(plus2authors$sexo_id == 'Female')/nrow(plus2authors)`
+
+Thus, the probability of being a male is $1 - P(Female)$. To see how the author position and the sex of the author relate to each other we examine the joint probability.
+
+What is the probability of being both a first author and a female? $P(Female \cap First \ Author)$ = `r sum(plus2authors$sexo_id == 'Female' & plus2authors$author_position == 'first')/nrow(plus2authors)`
+
+What is the probability of being both a first author and a male? $P(Male \cap First \ Author)$ = `r sum(plus2authors$sexo_id == 'Male' & plus2authors$author_position == 'first')/nrow(plus2authors)`
+
+What is the probability of being both a last author and a female? $P(Female \cap Last \ Author)$
+`r sum(plus2authors$sexo_id == 'Female' & plus2authors$author_position == 'last')/nrow(plus2authors)`
+
+What is the probability of being both a last author and a male? $P(Male \cap Last \ Author)$
+`r sum(plus2authors$sexo_id == 'Male' & plus2authors$author_position == 'last')/nrow(plus2authors)`
+
+Now the question can be about how the fact of being a Female affects the probability of being a last author. 
+
+What is the probability of being a last author given one is female? $P(Last \ Author|Female) = \frac{P(Female \cap Last \ Author)}{P(Female)}$ 
+
+`r sum(plus2authors$sexo_id == 'Female' & plus2authors$author_position == 'last')/sum(plus2authors$sexo_id == 'Female')`
+
+Furthermore we could calculate the odds ratio for female as last author `r xtabs(~sexo_id + author_position, plus2authors)[1,2]/sum(xtabs(~sexo_id + author_position, plus2authors)[1,c(1,3)])` and male as last author `r xtabs(~sexo_id + author_position, plus2authors)[2,2]/sum(xtabs(~sexo_id + author_position, plus2authors)[2,c(1,3)])`. We could now ask about the odds ratio which is equal to the odds of being a last author while female and the odds of being a last author while male. To calculate this and get uncertainty bounds, we compute the mean and confidence interval via bootstraping.
+
+```{r}
+#Repeat the process 10.000 times and get 95% interval
+res <- replicate(10000,
+          {
+            n_df <- nrow(plus2authors)
+            #Sample n numbers from n possible numbers where n is the row number from the dataset
+            sampled_authors <- sample(n_df, n_df, replace = TRUE)
+            #Generate dataframe with the rows corresponding to the sampled numbers
+            sampled_df <- plus2authors[sampled_authors, ]
+            #Frequency Table
+            sampled_freq <- xtabs(~sexo_id + author_position, sampled_df)
+            (sampled_freq[2,2]*sum(sampled_freq[1,c(1,3)]))/(sampled_freq[1,2]*sum(sampled_freq[2,c(1,3)]))
+          }
+)
+mean(res)
+quantile(res, c(.025,.975))
+```
+As a follow up we would like to know how the sex of the last author affects the sex of the first author. 
+
+
+```{r}
+#Last author is female
+female_last <- plus2authors %>% filter(
+  titulo %in% plus2authors[which(plus2authors$sexo_id == 'Female' & plus2authors$author_position == 'last'),'titulo']$titulo
+)
+
+#Last author is male
+male_last <- plus2authors %>% filter(
+  titulo %in% plus2authors[which(plus2authors$sexo_id == 'Male' & plus2authors$author_position == 'last'),'titulo']$titulo
+)
+
+freq_tab <- cbind(
+  table(female_last[female_last$author_position == 'first',]$sexo_id),
+  table(male_last[male_last$author_position == 'first',]$sexo_id)
+)
+rownames(freq_tab) <- c('Female First', 'Male First')
+colnames(freq_tab) <- c('Female Last', 'Male Last')
+freq_tab
+```
+The odds for a female first author when the last author is female are `r freq_tab[1,1]/freq_tab[2,1]`, the odds for a female first author when the last author is male are `r freq_tab[1,2]/freq_tab[2,2]`. The odds ratio is `r (freq_tab[1,1]*freq_tab[2,2])/(freq_tab[2,1]*freq_tab[1,2])`.
+
+# Graph Analysis
+
+```{r}
+joined_authors <- joined_authors %>% drop_na(titulo)
+bipartite_san <- graph.data.frame(joined_authors[c('titulo','match','year','tema')], directed = F)
+V(bipartite_san)$type <- V(bipartite_san)$name %in% joined_authors$match
+#Get graph data for each year graph
+df_year_san <- tibble( #Empty dataframe to hold the results of the for loop
+  size = NA, #Graph size
+  mean_short_path = NA, #Average shortest path length
+  density = NA, #Largest component graph density
+  no_comp = NA, #Number of components
+  max_comp = NA, #Size of the maximum component
+  diameter = NA, #Largest component graph diamaeter
+  transitivity = NA, #Largest component graph transitivity,
+  year = NA 
+) 
+#Iterate over each year to calculate a graph (and associated measures) for that year's conference
+for(y in unique(joined_authors$year)){
+  #Create a graph from the edge list of the year y
+  year_san <- joined_authors %>% filter(year == y) %>%
+    select(titulo,match,tema) %>%
+    graph.data.frame(., directed = F) 
+  #Transform the graph into a bipartite graph
+  V(year_san)$type <- V(year_san)$name %in% joined_authors[joined_authors$year == y,'match'][[1]]
+  #Project the bipartite graph to get the authors graph
+  bn_year_san <- bipartite.projection(year_san)[[2]]
+  #Add the sex attribute to the vertices
+  V(bn_year_san)$sex <- joined_authors %>% filter(match %in% V(bn_year_san)$name) %>% distinct(match, .keep_all = T) %>% 
+    select(sexo_id) %>% .[[1]]
+  #Get the name of the largest component
+  year_lg_comp <- names(
+    sort(
+      table(
+        components(bn_year_san)[[1]]
+            )
+            ,decreasing = T)
+                  )[1]
+  #Create a subgraph consisting of the nodes of the largest component
+  bn_year_large <- induced_subgraph(
+    bn_year_san, 
+    which(
+      components(bn_year_san)[[1]] == year_lg_comp
+      )
+    )
+  df_year_san <- df_year_san %>%
+    add_row(
+      size = gsize(bn_year_san),
+      mean_short_path = average.path.length(bn_year_large),
+      density = edge_density(bn_year_large),
+      no_comp = components(bn_year_san)$no,
+      max_comp = max(components(bn_year_san)$csize),
+      diameter = diameter(bn_year_large, directed = F, weights = NULL),
+      transitivity = transitivity(bn_year_large, type = 'global', weights = NULL),
+      year = y
+    )
+}
+df_year_san <- df_year_san %>% drop_na()
+
+attrb_names <- c('Size', 'Mean Short Path', 'Density', '# of Components', 'Max. Component size', 'Diameter', 'Transitivity')
+```
+
+These analysis were done using the most stringent threshold criteria thus leaving only `r length(unique(filter_match$match))` unique authors. 
+
+## Authors Graph
+
+```{r}
+# Use the second projection (containing the authors) from the bipartite graph
+grafo_autores <- bipartite.projection(bipartite_san)[[2]]
+
+# Add sex attribute to the vertices of the authors graph
+grafo_autores <- set.vertex.attribute(grafo_autores,
+                                      name = 'sex',
+                                      value = joined_authors %>% distinct(match, .keep_all = T) %>% select(sexo_id) %>% .[[1]] 
+                                        )  
+
+# Add category attribute to the vertices of the authors graph
+grafo_autores <- set.vertex.attribute(grafo_autores,
+                                      name = 'category',
+                                      value = joined_authors %>% distinct(match, .keep_all = T) %>% select(categoria_conicet_descripcion) %>% .[[1]]
+                                        )
+
+grafo_autores_large <- induced_subgraph(grafo_autores, vids = which(components(grafo_autores)$membership == 1))
+```
+
+
+### Circle
+
+```{r, fig.height=10}
+plot(grafo_autores, vertex.label = NA, vertex.size = 1, layout = layout_in_circle(grafo_autores), vertex.color = c('red','blue')[V(grafo_autores)$sex])
+```
+
+### Fruchterman-Reingold
+
+```{r, fig.height=10}
+plot(grafo_autores, vertex.label = NA, vertex.size = 1, layout = layout_with_fr(grafo_autores, niter = 1000), vertex.color = c('red','blue')[V(grafo_autores)$sex])
+```
+
+### Kamada Kawai
+
+```{r, fig.height=10}
+plot(grafo_autores, vertex.label = NA, vertex.size = 1, layout = layout_with_kk(grafo_autores), vertex.color = c('red','blue')[V(grafo_autores)$sex])
+```
+
+
+### Graph characteristics
+
+There are `r components(grafo_autores)$no` components in the graph with a median value of `r median(components(grafo_autores)$csize)` and a size range going from `r range(components(grafo_autores)$csize)[1]` to `r range(components(grafo_autores)$csize)[2]`.
+
+### Components Distribution
+
+```{r}
+hist(
+  components(grafo_autores)$csize,
+  main = 'Components size distribution',
+  xlab = 'Number of components'
+)
+```
+
+### Components Distribution (withouth the largest component)
+
+```{r}
+hist(
+  components(grafo_autores)$csize[components(grafo_autores)$csize < max(components(grafo_autores)$csize)],
+  main = 'Components size distribution',
+  xlab = 'Number of components'
+)
+```
+
+### Graph attributes through time
+
+```{r}
+colnames(df_year_san) <- c(attrb_names, 'Year')
+df_year_san %>%
+  pivot_longer(!Year, names_to = 'attributes') %>%
+ggplot(mapping = aes(x = Year, y = value)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~attributes, scales = 'free_y') +
+  theme_classic()
+
+graph_correlation <- df_year_san %>% select(-Year) %>% cor() 
+rownames(graph_correlation) <- attrb_names
+colnames(graph_correlation) <- attrb_names
+corrplot(graph_correlation, 'color', addCoef.col = 'black', tl.col = 'black', number.cex = 0.75, order = 'hclust', diag = FALSE, addrect = 2)
+```
+
+
+
