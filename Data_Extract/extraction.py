@@ -97,6 +97,9 @@ def san_parser_wrapper():
         #If the current iteration is the 2012 file execute a fix of the parsed data
         if i == 'san_2012':
             temporary_df = san_2012_fix(temporary_df)
+
+        #Add a year column to identify the year of the data frame
+        temporary_df['year'] = re.compile(r'\d+').search(str(i)).group()
         
         #Save the results from the current iteration as a csv file
         temporary_df.to_csv('../SAN_csv/' + i + '.csv')
@@ -118,7 +121,7 @@ def san_scraper_wrapper():
     #Takes no arguments and returns a pandas data frame
 
     #Generate an empty pandas dataframe to hold the results from the scraping process
-    df_autores = pd.DataFrame(columns = ['autor', 'afiliacion', 'titulo','tema', 'primer_autor'])
+    df_autores = pd.DataFrame(columns = ['autor', 'afiliacion', 'poster','tema', 'primer_autor'])
     #2020 Meeting URL which holds all the posters
     san2020 = r'https://san2020.saneurociencias.org.ar/epostersbytopics/'
     #Driver (browser) startup
@@ -156,7 +159,7 @@ def san_scraper_wrapper():
             #Dataframe con los nombres de los autores y los nombres de las afiliaciones
             aut_afil = extraccion_afiliaciones(poster_sel, autores, afiliaciones)
                 #Agregado de columna con el titulo y el tema del poster
-            aut_afil['titulo'] = titulo_poster
+            aut_afil['poster'] = titulo_poster
             aut_afil['tema'] = tema_poster
                 #Agregado de columna para definir si es el primer autor
                     #False para todos los autores menos el primero
@@ -189,4 +192,30 @@ def san_scraper_wrapper():
 
     #Output data frame object containig the results from the scraping process
     return df_autores
+
+def extraction_wrapper():
+
+    #Call for the pdf parsing wrapper function
+    final_parsing = san_parser_wrapper()
+
+    #Call for the web scraping wrapper function
+    final_scraping = san_scraper_wrapper()
+
+    #Select only the 4 relevant columns of the dataframe
+    final_parsing = final_parsing[
+        ['autor','tema','poster', 'year']
+    ]
+    final_scraping = final_scraping[
+        ['autor','tema','poster', 'year']
+    ]
+    #Merge the two data frames together
+    final_san_df = pd.concat(
+    [final_parsing, final_scraping]
+    )
+
+    #Save the results as a csv file
+    final_san_df.to_csv('../SAN_csv/all_posters.csv')
+
+    #Output data frame object that contains all the posters
+    return final_san_df
 
