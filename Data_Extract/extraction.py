@@ -106,6 +106,9 @@ def san_parser_wrapper():
             [final_df,
             temporary_df]
         )
+    #Save the final data frame as a csv file
+    final_df.to_csv('../SAN_csv/all_parsed_data.csv')
+
     #Output data frame containing all the parsed results
     return final_df
 
@@ -186,3 +189,4 @@ def san_scraper_wrapper():
 
     #Output data frame object containig the results from the scraping process
     return df_autores
+
