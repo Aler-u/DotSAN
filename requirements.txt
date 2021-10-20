@@ -12,3 +12,4 @@ Scrapy==2.4.1
 selenium==3.141.0
 requests==2.25.1
 pathlib==1.0.1
+scikit-learn==0.24.1
