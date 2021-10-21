@@ -15,7 +15,7 @@ The file *all_posters.csv* within the *SAN_csv* folder contains the poster infor
 If you just want the extracted and curated data to use right away, then there are two main ways to proceed. 
 
 The easisest way is to clone the current repository into your local machine by executing the following command   
-`git clone https://github.com/Aler-u/DotSAN`  
+`git clone https://github.com/Aler-u/DotSAN.git`  
 From there you get all the files included in the repository so you can use whatever file you need. 
 
 The second way is to download a .zip file containing all the files directly from this github repository and then proceed the same as before. 
