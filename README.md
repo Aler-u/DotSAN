@@ -36,5 +36,5 @@ You can collaborate by reporting issues or helping with more features and assets
 
 ## LICENSE
 
-
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
